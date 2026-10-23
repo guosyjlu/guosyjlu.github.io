@@ -66,6 +66,13 @@ h2{font:500 30px/1.15 var(--display);letter-spacing:-.5px;margin:0}
 .publication details p{font-size:14px;color:var(--body);line-height:1.7;padding:10px 13px;margin:8px 0 0;background:var(--pale);border-left:2px solid #b89b9f}
 .award-row{display:grid;grid-template-columns:88px minmax(0,1fr) auto;column-gap:17px;align-items:baseline;padding:4px 0}
 .award-title{font-size:16px;margin:0;color:var(--body)}.award-issuer{font-size:13px;color:var(--muted)}
+.analytics-section{border-top:1px solid var(--line);margin-top:30px;padding-top:23px;text-align:center}
+.analytics-section h2{font-size:22px;font-weight:500;letter-spacing:-.3px;margin:0 0 16px}
+.visitor-map{width:100%;max-width:640px;min-height:150px;margin:0 auto}
+.analytics-section #mapmyvisitors-widget{max-width:100%;font-family:var(--sans)}
+.analytics-section .mapmyvisitors-visitors{font-family:var(--sans);padding-bottom:10px}
+.analytics-caption{font-size:11px;line-height:1.5;color:var(--muted);margin:10px 0 0}
+.analytics-caption a:hover{color:var(--accent)}
 .site-footer{border-top:1px solid var(--line);margin-top:28px;padding:15px 0 5px;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted)}
 .site-footer p{margin:0}.back-to-top{display:flex;gap:8px;align-items:center}.back-to-top:hover{color:var(--accent)}
 .skip-link{position:fixed;left:16px;top:-100px;padding:8px 16px;background:var(--ink);color:white;z-index:5}.skip-link:focus{top:16px}
