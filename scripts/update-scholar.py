@@ -2,9 +2,11 @@ import argparse
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.parse import urlencode
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -14,6 +16,10 @@ PROFILE_ID = "JE1Yco4AAAAJ"
 OUTPUT = ROOT / "assets" / "scholar-stats.json"
 SOURCE = "https://scholar.google.com/citations?" + urlencode({"user": PROFILE_ID, "hl": "en"})
 FALLBACK = "https://cse.bth.se/~fer/googlescholar-api/googlescholar.php?" + urlencode({"user": PROFILE_ID})
+
+
+class ScholarUnavailable(RuntimeError):
+    pass
 
 
 class ScholarStats(HTMLParser):
@@ -61,19 +67,25 @@ def parse_stats(html):
 
 def fetch_text(url):
     request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
-    with urlopen(request, timeout=25) as response:
+    with urlopen(request, timeout=20) as response:
         return response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
 
 
 def parse_fallback(text):
     data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Fallback response was not an object")
     count = data.get("total_citations")
     if type(count) is not int or count < 0:
         raise ValueError("Fallback citation count was not a nonnegative integer")
 
     papers = data.get("publications", [])
+    if not isinstance(papers, list):
+        raise ValueError("Fallback publication list was missing")
     if not any(
         isinstance(paper, dict)
+        and isinstance(paper.get("title"), str)
+        and isinstance(paper.get("authors"), str)
         and paper.get("title", "").startswith("DS-Agent: Automated Data Science")
         and paper.get("authors", "").startswith("S Guo,")
         for paper in papers
@@ -82,21 +94,38 @@ def parse_fallback(text):
     return count
 
 
-def update_stats(output=OUTPUT, html=None):
-    retrieval = SOURCE
-    if html is not None:
-        count = parse_stats(html)
-    else:
-        try:
-            count = parse_stats(fetch_text(SOURCE))
-        except (URLError, TimeoutError, OSError, ValueError) as error:
-            print(f"Direct Scholar fetch unavailable ({error}); trying BTH fallback", file=sys.stderr)
-            count = parse_fallback(fetch_text(FALLBACK))
-            retrieval = FALLBACK
+def retrieve_stats():
+    for attempt in range(1, 4):
+        errors = []
+        for label, url, parse in (
+            ("Google Scholar", SOURCE, parse_stats),
+            ("BTH fallback", FALLBACK, parse_fallback),
+        ):
+            try:
+                return parse(fetch_text(url)), url
+            except (URLError, TimeoutError, OSError, ValueError) as error:
+                message = f"{label}: {error}"
+                errors.append(message)
+                print(f"Attempt {attempt}/3 unavailable ({message})", file=sys.stderr)
+        if attempt < 3:
+            time.sleep(2 ** attempt)
+    raise ScholarUnavailable("; ".join(errors))
+
+
+def read_cached_stats(output):
     try:
         old = json.loads(output.read_text())
     except (OSError, ValueError):
-        old = {}
+        return None
+    if not isinstance(old, dict) or old.get("profileId") != PROFILE_ID:
+        return None
+    count = old.get("citations")
+    return old if type(count) is int and count >= 0 else None
+
+
+def update_stats(output=OUTPUT, html=None):
+    count, retrieval = (parse_stats(html), SOURCE) if html is not None else retrieve_stats()
+    old = read_cached_stats(output) or {}
 
     if old.get("profileId") == PROFILE_ID and old.get("citations") == count:
         return old, False
@@ -119,14 +148,31 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--html", type=Path, help="Parse saved HTML for offline verification")
+    parser.add_argument("--allow-stale", action="store_true", help="Keep a validated cached count when all remote sources are unavailable")
     args = parser.parse_args()
     html = args.html.read_text(errors="replace") if args.html else None
     try:
         stats, changed = update_stats(args.output, html)
+    except ScholarUnavailable as error:
+        stats = read_cached_stats(args.output) if args.allow_stale else None
+        if stats is None:
+            print(f"Scholar update failed: {error}", file=sys.stderr)
+            return 1
+        message = f"Both citation sources are unavailable after 3 attempts. Retained {stats['citations']} citations; no fresh data was retrieved."
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning title=Google Scholar refresh deferred::{message}")
+        else:
+            print(f"Warning: {message}", file=sys.stderr)
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            with open(summary, "a") as stream:
+                stream.write(f"### Citation refresh deferred\n\n{message}\n\nThe next scheduled run will retry automatically.\n")
+        print(json.dumps({"citations": stats["citations"], "changed": False, "status": "stale"}))
+        return 0
     except Exception as error:
         print(f"Scholar update failed: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"citations": stats["citations"], "changed": changed}))
+    print(json.dumps({"citations": stats["citations"], "changed": changed, "status": "fresh"}))
     return 0
 
 

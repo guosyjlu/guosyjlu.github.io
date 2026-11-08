@@ -28,7 +28,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Read total citations from the public Scholar profile
-        run: python scripts/update-scholar.py
+        run: python scripts/update-scholar.py --allow-stale
       - name: Commit only a changed citation count
         id: commit
         run: |
