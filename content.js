@@ -7,7 +7,7 @@ window.homepage = {
       { text: "Prof. Yi Chang", href: "http://yichang-cs.com/", strong: true },
       ". I am also fortunate to receive guidance from ",
       { text: "Prof. Jun Wang", href: "http://www0.cs.ucl.ac.uk/staff/jun.wang/", strong: true },
-      "."
+      " starting from 2023."
     ],
     [
       "My research focuses on enabling agents to ",
