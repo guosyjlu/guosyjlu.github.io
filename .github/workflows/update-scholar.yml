@@ -28,7 +28,15 @@ jobs:
         with:
           python-version: '3.12'
       - name: Read total citations from the public Scholar profile
-        run: python scripts/update-scholar.py --allow-stale
+        run: python scripts/update-scholar.py --allow-stale --diagnostics-dir "$RUNNER_TEMP/scholar-diagnostics"
+      - name: Save sanitized Scholar diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scholar-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scholar-diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Commit only a changed citation count
         id: commit
         run: |

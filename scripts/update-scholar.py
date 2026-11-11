@@ -7,8 +7,8 @@ from pathlib import Path
 import re
 import sys
 import time
-from urllib.parse import urlencode
-from urllib.error import URLError
+from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +20,77 @@ FALLBACK = "https://cse.bth.se/~fer/googlescholar-api/googlescholar.php?" + urle
 
 class ScholarUnavailable(RuntimeError):
     pass
+
+
+class DiagnosticText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hidden = 0
+        self.in_title = False
+        self.title = []
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self.hidden += 1
+        if tag == "title":
+            self.in_title = True
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self.hidden = max(0, self.hidden - 1)
+        if tag == "title":
+            self.in_title = False
+
+    def handle_data(self, text):
+        if not self.hidden:
+            self.text.append(text)
+            if self.in_title:
+                self.title.append(text)
+
+
+def safe_url(url):
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.hostname or "", parts.path, "", ""))
+
+
+def redact(text):
+    text = re.sub(r"https?://[^\s<>\"']+", lambda match: safe_url(match.group()), str(text))
+    text = re.sub(r"[?&][\w.-]+=[^\s<>\"']+", "[query redacted]", text)
+    text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "[IP redacted]", text)
+    text = re.sub(r"(?<!\w)(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.%]+", "[IP redacted]", text)
+    text = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[email redacted]", text)
+    text = re.sub(r"\b[A-Za-z0-9_-]{32,}\b", "[token redacted]", text)
+    return " ".join(text.split())
+
+
+def record_diagnostic(directory, url, attempt, response=None, text="", error=None):
+    if directory is None:
+        return
+    report = {"attempt": attempt, "requestUrl": redact(safe_url(url))}
+    if response is not None:
+        allowed = ("content-type", "content-length", "server", "cache-control", "retry-after", "location")
+        headers = {key: redact(response.headers[key]) for key in allowed if key in response.headers}
+        page = DiagnosticText()
+        page.feed(text[:65536])
+        visible = " ".join(page.text)
+        report.update({
+            "status": response.getcode(),
+            "finalUrl": redact(safe_url(response.geturl())),
+            "headers": headers,
+            "pageTitle": redact(" ".join(page.title))[:200],
+            "pageExcerpt": redact(visible)[:1600],
+            "signals": [phrase for phrase in (
+                "unusual traffic", "automated queries", "automated requests", "captcha",
+                "access denied", "does not have permission", "forbidden",
+            ) if phrase in visible.lower()],
+        })
+    if error is not None:
+        report["error"] = redact(error)
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = directory / f"attempt-{attempt}-{urlsplit(url).hostname}.json"
+    filename.write_text(json.dumps(report, indent=2) + "\n")
+    print("Scholar diagnostic: " + json.dumps(report), file=sys.stderr)
 
 
 class ScholarStats(HTMLParser):
@@ -65,10 +136,21 @@ def parse_stats(html):
     return int(digits)
 
 
-def fetch_text(url):
+def fetch_text(url, diagnostics=None, attempt=1):
     request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en"})
-    with urlopen(request, timeout=20) as response:
-        return response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+    try:
+        with urlopen(request, timeout=20) as response:
+            text = response.read().decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+            record_diagnostic(diagnostics, url, attempt, response=response, text=text)
+            return text
+    except HTTPError as error:
+        with error:
+            text = error.read(65536).decode("utf-8", errors="replace")
+            record_diagnostic(diagnostics, url, attempt, response=error, text=text, error=error)
+        raise
+    except (URLError, TimeoutError, OSError) as error:
+        record_diagnostic(diagnostics, url, attempt, error=error)
+        raise
 
 
 def parse_fallback(text):
@@ -94,7 +176,7 @@ def parse_fallback(text):
     return count
 
 
-def retrieve_stats():
+def retrieve_stats(diagnostics=None):
     for attempt in range(1, 4):
         errors = []
         for label, url, parse in (
@@ -102,7 +184,7 @@ def retrieve_stats():
             ("BTH fallback", FALLBACK, parse_fallback),
         ):
             try:
-                return parse(fetch_text(url)), url
+                return parse(fetch_text(url, diagnostics, attempt)), url
             except (URLError, TimeoutError, OSError, ValueError) as error:
                 message = f"{label}: {error}"
                 errors.append(message)
@@ -123,8 +205,8 @@ def read_cached_stats(output):
     return old if type(count) is int and count >= 0 else None
 
 
-def update_stats(output=OUTPUT, html=None):
-    count, retrieval = (parse_stats(html), SOURCE) if html is not None else retrieve_stats()
+def update_stats(output=OUTPUT, html=None, diagnostics=None):
+    count, retrieval = (parse_stats(html), SOURCE) if html is not None else retrieve_stats(diagnostics)
     old = read_cached_stats(output) or {}
 
     if old.get("profileId") == PROFILE_ID and old.get("citations") == count:
@@ -149,10 +231,11 @@ def main():
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--html", type=Path, help="Parse saved HTML for offline verification")
     parser.add_argument("--allow-stale", action="store_true", help="Keep a validated cached count when all remote sources are unavailable")
+    parser.add_argument("--diagnostics-dir", type=Path, help="Save sanitized response diagnostics outside the published site")
     args = parser.parse_args()
     html = args.html.read_text(errors="replace") if args.html else None
     try:
-        stats, changed = update_stats(args.output, html)
+        stats, changed = update_stats(args.output, html, args.diagnostics_dir)
     except ScholarUnavailable as error:
         stats = read_cached_stats(args.output) if args.allow_stale else None
         if stats is None:
