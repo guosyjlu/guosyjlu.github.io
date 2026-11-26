@@ -34,7 +34,7 @@ window.homepage = {
   news: [
     {
       date: "Nov 2026",
-      text: [{ text: "Successfully defended my PhD thesis", strong: true }]
+      text: "Successfully defended my PhD thesis!"
     },
     {
       date: "May 2026",
