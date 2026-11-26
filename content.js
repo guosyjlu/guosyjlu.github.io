@@ -33,6 +33,10 @@ window.homepage = {
   },
   news: [
     {
+      date: "Nov 2026",
+      text: [{ text: "Successfully defended my PhD thesis", strong: true }]
+    },
+    {
       date: "May 2026",
       text: [
         "Check our latest work on continual learning agents — “",
